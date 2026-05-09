@@ -65,7 +65,13 @@ class UrlSchemeActivity : BaseActivity() {
         }
         LogUtil.i(AppConfig.TAG, uriString)
 
-        var decodedUrl = URLDecoder.decode(uriString, "UTF-8")
+        // olcrtc:// uses `?`, `@`, `#`, `%`, `$` as raw field separators (see olcrtc/docs/uri.md),
+        // so URL-decoding would mangle the encryption key (`%clientID` → `%cl…` → garbage).
+        var decodedUrl = if (uriString.startsWith(AppConfig.OLCRTC)) {
+            uriString
+        } else {
+            URLDecoder.decode(uriString, "UTF-8")
+        }
         val uri = Uri.parse(decodedUrl)
         if (uri != null) {
             if (uri.fragment.isNullOrEmpty() && !fragment.isNullOrEmpty()) {

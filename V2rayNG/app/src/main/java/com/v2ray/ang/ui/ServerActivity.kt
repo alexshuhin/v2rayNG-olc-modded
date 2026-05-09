@@ -7,6 +7,7 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
@@ -146,13 +147,26 @@ class ServerActivity : BaseActivity() {
     private val layout_browser_dialer: LinearLayout? by lazy { findViewById(R.id.layout_browser_dialer) }
     private val sp_browser_dialer_mode: Spinner? by lazy { findViewById(R.id.sp_browser_dialer_mode) }
 
+    // OLCRTC editor views
+    private val sp_olcrtc_carrier: Spinner? by lazy { findViewById(R.id.sp_olcrtc_carrier) }
+    private val sp_olcrtc_transport: Spinner? by lazy { findViewById(R.id.sp_olcrtc_transport) }
+    private val et_olcrtc_room_id: EditText? by lazy { findViewById(R.id.et_olcrtc_room_id) }
+    private val et_olcrtc_client_id: EditText? by lazy { findViewById(R.id.et_olcrtc_client_id) }
+    private val et_olcrtc_key: EditText? by lazy { findViewById(R.id.et_olcrtc_key) }
+    private val btn_olcrtc_generate_key: Button? by lazy { findViewById(R.id.btn_olcrtc_generate_key) }
+
+    private val olcrtcCarriers = arrayOf("wbstream", "telemost", "jazz")
+    // Mobile binding only supports datachannel + vp8channel
+    private val olcrtcTransports = arrayOf("datachannel", "vp8channel")
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val config = MmkvManager.decodeServerConfig(editGuid)
 
-        val layoutId = when (config?.configType ?: createConfigType) {
+        val effectiveConfigType = config?.configType ?: createConfigType
+        val layoutId = when (effectiveConfigType) {
             EConfigType.VMESS -> R.layout.activity_server_vmess
             EConfigType.SHADOWSOCKS -> R.layout.activity_server_shadowsocks
             EConfigType.SOCKS, EConfigType.HTTP -> R.layout.activity_server_socks
@@ -160,9 +174,15 @@ class ServerActivity : BaseActivity() {
             EConfigType.TROJAN -> R.layout.activity_server_trojan
             EConfigType.WIREGUARD -> R.layout.activity_server_wireguard
             EConfigType.HYSTERIA2 -> R.layout.activity_server_hysteria2
+            EConfigType.OLCRTC -> R.layout.activity_server_olcrtc
             else -> null
         } ?: return
-        setContentViewWithToolbar(layoutId, showHomeAsUp = true, title = (config?.configType ?: createConfigType).toString())
+        setContentViewWithToolbar(layoutId, showHomeAsUp = true, title = effectiveConfigType.toString())
+
+        if (effectiveConfigType == EConfigType.OLCRTC) {
+            setupOlcrtcUi(config)
+            return
+        }
 
         sp_network?.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
@@ -356,6 +376,10 @@ class ServerActivity : BaseActivity() {
      */
     private fun bindingServer(config: ProfileItem): Boolean {
 
+        if (config.configType == EConfigType.OLCRTC) {
+            return bindingOlcrtc(config)
+        }
+
         et_remarks.text = Utils.getEditable(config.remarks)
         et_address.text = Utils.getEditable(config.server.orEmpty())
         et_port.text = Utils.getEditable(config.serverPort ?: DEFAULT_PORT.toString())
@@ -466,6 +490,9 @@ class ServerActivity : BaseActivity() {
      * save server config
      */
     private fun saveServer(): Boolean {
+        if (createConfigType == EConfigType.OLCRTC) {
+            return saveOlcrtc()
+        }
         if (TextUtils.isEmpty(et_remarks.text.toString())) {
             toast(R.string.server_lab_remarks)
             return false
@@ -659,6 +686,104 @@ class ServerActivity : BaseActivity() {
                 arrayOf("---")
             }
         }
+    }
+
+    /**
+     * Sets up the OLCRTC editor UI. Bypasses the V2Ray-shaped sp_network listener.
+     */
+    private fun setupOlcrtcUi(config: ProfileItem?) {
+        sp_olcrtc_carrier?.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_item, olcrtcCarriers
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        sp_olcrtc_transport?.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_item, olcrtcTransports
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        btn_olcrtc_generate_key?.setOnClickListener {
+            et_olcrtc_key?.setText(generateOlcrtcKey())
+        }
+
+        if (config != null) bindingOlcrtc(config) else clearOlcrtc()
+    }
+
+    private fun bindingOlcrtc(config: ProfileItem): Boolean {
+        et_remarks.text = Utils.getEditable(config.remarks)
+        et_olcrtc_room_id?.text = Utils.getEditable(config.host.orEmpty())
+        et_olcrtc_client_id?.text = Utils.getEditable(config.username.orEmpty())
+        et_olcrtc_key?.text = Utils.getEditable(config.password.orEmpty())
+
+        val carrierIdx = olcrtcCarriers.indexOf(config.network.orEmpty())
+        if (carrierIdx >= 0) sp_olcrtc_carrier?.setSelection(carrierIdx)
+
+        val transportIdx = olcrtcTransports.indexOf(config.headerType.orEmpty())
+        if (transportIdx >= 0) sp_olcrtc_transport?.setSelection(transportIdx)
+
+        return true
+    }
+
+    private fun clearOlcrtc(): Boolean {
+        et_remarks.text = null
+        et_olcrtc_room_id?.text = null
+        et_olcrtc_client_id?.setText("default")
+        et_olcrtc_key?.text = null
+        sp_olcrtc_carrier?.setSelection(0)
+        sp_olcrtc_transport?.setSelection(0)
+        return true
+    }
+
+    private fun saveOlcrtc(): Boolean {
+        if (TextUtils.isEmpty(et_remarks.text.toString())) {
+            toast(R.string.server_lab_remarks)
+            return false
+        }
+        val carrier = olcrtcCarriers.getOrNull(sp_olcrtc_carrier?.selectedItemPosition ?: 0).orEmpty()
+        val transport = olcrtcTransports.getOrNull(sp_olcrtc_transport?.selectedItemPosition ?: 0).orEmpty()
+        val roomId = et_olcrtc_room_id?.text?.toString()?.trim().orEmpty()
+        val clientId = et_olcrtc_client_id?.text?.toString()?.trim().orEmpty()
+        val keyHex = et_olcrtc_key?.text?.toString()?.trim()?.replace("\\s+".toRegex(), "").orEmpty()
+
+        if (carrier.isEmpty() || transport.isEmpty()) {
+            toast(R.string.toast_invalid_url)
+            return false
+        }
+        // jazz can use empty roomId server-side (auto), but on the client the server already has one
+        if (clientId.isEmpty()) {
+            toast(R.string.server_lab_olcrtc_client_id)
+            return false
+        }
+        if (keyHex.isEmpty() || !keyHex.matches("[0-9a-fA-F]+".toRegex()) || keyHex.length != 64) {
+            toast(R.string.server_lab_olcrtc_key)
+            return false
+        }
+
+        val config = MmkvManager.decodeServerConfig(editGuid)
+            ?: ProfileItem.create(EConfigType.OLCRTC)
+        config.remarks = et_remarks.text.toString().trim()
+        config.network = carrier
+        config.headerType = transport
+        config.host = roomId
+        config.username = clientId
+        config.password = keyHex
+        config.server = carrier
+        config.serverPort = "0"
+        config.description = AngConfigManager.generateDescription(config)
+        if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
+            config.subscriptionId = subscriptionId.orEmpty()
+        }
+        MmkvManager.encodeServerConfig(editGuid, config)
+        if (isRunning) {
+            SettingsChangeManager.makeRestartService()
+        }
+        toastSuccess(R.string.toast_success)
+        finish()
+        return true
+    }
+
+    private fun generateOlcrtcKey(): String {
+        val bytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(bytes)
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     /**

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.Tun2SocksControl
+import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.util.LogUtil
@@ -90,11 +91,30 @@ class TProxyService(
             val tcpTimeout = parts.getOrNull(0)?.toIntOrNull() ?: 300
             val udpTimeout = parts.getOrNull(1)?.toIntOrNull() ?: 60
 
+            // For SOCKS5 backends that don't support UDP ASSOCIATE (e.g. olcrtc),
+            // turn on hev's mapdns: it intercepts DNS queries to 198.18.0.2:53,
+            // hands out fake IPs from 100.64.0.0/10, and translates incoming TCP
+            // connects on those IPs into SOCKS5 CONNECT-by-hostname requests.
+            // The remote server then resolves the hostname itself.
+            if (currentProfileIsOlcrtc()) {
+                appendLine("mapdns:")
+                appendLine("  address: 198.18.0.2")
+                appendLine("  port: 53")
+                appendLine("  network: 100.64.0.0")
+                appendLine("  netmask: 255.192.0.0")
+                appendLine("  cache-size: 10000")
+            }
+
             appendLine("misc:")
             appendLine("  tcp-read-write-timeout: ${tcpTimeout * 1000}")
             appendLine("  udp-read-write-timeout: ${udpTimeout * 1000}")
             appendLine("  log-level: ${MmkvManager.decodeSettingsString(AppConfig.PREF_HEV_TUNNEL_LOGLEVEL) ?: "warn"}")
         }
+    }
+
+    private fun currentProfileIsOlcrtc(): Boolean {
+        val guid = MmkvManager.getSelectServer() ?: return false
+        return MmkvManager.decodeServerConfig(guid)?.configType == EConfigType.OLCRTC
     }
 
     /**

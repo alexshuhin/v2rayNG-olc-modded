@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name" translatable="false">v2rayNG</string>
+    <string name="app_name" translatable="false">v2rayNG olc-modded</string>
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">Switch</string>
     <string name="app_tile_first_use">First use of this feature, please use the app to add server</string>
@@ -40,6 +40,13 @@
     <string name="menu_item_import_config_manually_trojan">Add [Trojan]</string>
     <string name="menu_item_import_config_manually_wireguard">Add [Wireguard]</string>
     <string name="menu_item_import_config_manually_hysteria2">Add [Hysteria2]</string>
+    <string name="menu_item_import_config_manually_olcrtc">Add [olcRTC]</string>
+    <string name="server_lab_olcrtc_carrier">Carrier</string>
+    <string name="server_lab_olcrtc_transport">Transport</string>
+    <string name="server_lab_olcrtc_room_id">Room ID</string>
+    <string name="server_lab_olcrtc_client_id">Client ID</string>
+    <string name="server_lab_olcrtc_key">Encryption key (hex)</string>
+    <string name="server_lab_olcrtc_generate_key">Generate</string>
     <string name="del_config_comfirm">Confirm delete ?</string>
     <string name="del_invalid_config_comfirm">Please test before deleting! Confirm delete ?</string>
     <string name="server_lab_remarks">remarks</string>

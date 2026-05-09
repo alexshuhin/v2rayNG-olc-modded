@@ -1,32 +1,105 @@
-# v2rayNG
+# v2rayNG-olc-modded
 
-A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-core) and [v2fly core](https://github.com/v2fly/v2ray-core)
+Fork of [2dust/v2rayNG](https://github.com/2dust/v2rayNG) with first-class support for the
+[olcRTC](https://github.com/openlibrecommunity/olcrtc) protocol — a tunnel that hides traffic
+inside legitimate WebRTC video services (Yandex Telemost, VK Звонки, Wildberries Stream).
 
-[![API](https://img.shields.io/badge/API-24%2B-yellow.svg?style=flat)](https://developer.android.com/about/versions/lollipop)
-[![Kotlin Version](https://img.shields.io/badge/Kotlin-2.3.0-blue.svg)](https://kotlinlang.org)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/2dust/v2rayNG)](https://github.com/2dust/v2rayNG/commits/master)
-[![CodeFactor](https://www.codefactor.io/repository/github/2dust/v2rayng/badge)](https://www.codefactor.io/repository/github/2dust/v2rayng)
-[![GitHub Releases](https://img.shields.io/github/downloads/2dust/v2rayNG/latest/total?logo=github)](https://github.com/2dust/v2rayNG/releases)
-[![Chat on Telegram](https://img.shields.io/badge/Chat%20on-Telegram-brightgreen.svg)](https://t.me/v2rayn)
+The original v2rayNG functionality (VMess / VLESS / Shadowsocks / Trojan / Wireguard / Hysteria2)
+is untouched; this fork only adds an extra protocol type and the wiring needed to run its
+WebRTC engine alongside libv2ray.
 
-### Telegram Channel
-[github_2dust](https://t.me/github_2dust)
+> All changes live on the `olc-modded` branch. The `master` branch is kept identical to
+> upstream `2dust/v2rayNG` so it can be re-synced with `git pull upstream master` cleanly.
+> The original upstream README is preserved as [`UPSTREAM-README.md`](./UPSTREAM-README.md).
 
-### Usage
+## Why
 
-#### Geoip and Geosite
-- geoip.dat and geosite.dat files are in `Android/data/com.v2ray.ang/files/assets` (path may differ on some Android device)
-- download feature will get enhanced version in this [repo](https://github.com/Loyalsoldier/v2ray-rules-dat) (Note it need a working proxy)
-- latest official [domain list](https://github.com/Loyalsoldier/v2ray-rules-dat) and [ip list](https://github.com/Loyalsoldier/geoip) can be imported manually
-- possible to use third party dat file in the same folder, like [h2y](https://guide.v2fly.org/routing/sitedata.html#%E5%A4%96%E7%BD%AE%E7%9A%84%E5%9F%9F%E5%90%8D%E6%96%87%E4%BB%B6)
+Carrier whitelists in some networks pin a small set of "safe" services and drop everything else.
+olcRTC enrolls the client and a remote server as two participants in a real WebRTC call on a
+whitelisted SFU and shovels arbitrary TCP through that data channel. Blocking it requires
+blocking the underlying video service, which is not realistic for traffic-bearing whitelists.
 
-### More in our [wiki](https://github.com/2dust/v2rayNG/wiki)
+Read the protocol description here: <https://habr.com/ru/articles/1020114/>
 
-### Development guide
+## What's new vs upstream
 
-Android project under V2rayNG folder can be compiled directly in Android Studio, or using Gradle wrapper. But the v2ray core inside the aar is (probably) outdated.  
-The aar can be compiled from the Golang project [AndroidLibV2rayLite](https://github.com/2dust/AndroidLibV2rayLite) or [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite).
-For a quick start, read guide for [Go Mobile](https://github.com/golang/go/wiki/Mobile) and [Makefiles for Go Developers](https://tutorialedge.net/golang/makefiles-for-go-developers/)
+- **`olcrtc://` URI scheme + import** in `AngConfigManager` and `UrlSchemeActivity`
+- **`Add [olcRTC]` menu entry** with carrier/transport/room/client/key form
+- **`OlcrtcEngineController`** runs the olcrtc CLI as a child process (the gomobile AAR
+  conflicts with libv2ray's `libgojni.so`, so a separate process is the only way to coexist)
+- **`mapdns` enabled in hev-socks5-tunnel** for OLCRTC profiles. olcrtc only does TCP, so
+  hev hands out fake IPs from `100.64.0.0/10` and rewrites incoming connects into hostname-
+  based SOCKS5 CONNECT — the remote olcrtc server resolves DNS itself
+- **VPN routes for the fake-DNS range** (`198.18.0.0/15`, `100.64.0.0/10`) added to the
+  tun configuration when an OLCRTC profile is active
+- **Process-aware `isRunning()`** — the QSTile in the status bar now lights up correctly
+  when the olcrtc engine is the active backend
 
-v2rayNG can run on Android Emulators. For WSA, VPN permission need to be granted via
-`appops set [package name] ACTIVATE_VPN allow`
+Files touched:
+```
+V2rayNG/app/build.gradle.kts                          (buildToolsVersion + version suffix)
+V2rayNG/app/src/main/java/com/v2ray/ang/AppConfig.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/enums/EConfigType.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/handler/AngConfigManager.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/ui/MainActivity.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/ui/ServerActivity.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/ui/UrlSchemeActivity.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/core/CoreServiceManager.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/service/CoreVpnService.kt
+V2rayNG/app/src/main/java/com/v2ray/ang/service/TProxyService.kt
+V2rayNG/app/src/main/res/menu/menu_main.xml
+V2rayNG/app/src/main/res/values/strings.xml
+V2rayNG/app/src/main/java/com/v2ray/ang/fmt/OlcrtcFmt.kt                 (new)
+V2rayNG/app/src/main/java/com/v2ray/ang/core/OlcrtcEngineController.kt    (new)
+V2rayNG/app/src/main/res/layout/activity_server_olcrtc.xml                (new)
+```
+
+## Build
+
+You need Android NDK r29+, Android SDK with `platform-android-24` and `build-tools;37.0.0`,
+JDK 17+, Go 1.26+ with `gomobile`, and `mage`.
+
+```bash
+git clone --recurse-submodules -b olc-modded https://github.com/alexshuhin/v2rayNG-olc-modded
+cd v2rayNG-olc-modded
+export ANDROID_NDK_HOME=/path/to/android-ndk
+export ANDROID_HOME=/path/to/android-sdk
+ABI=arm64-v8a ./scripts/fetch-deps.sh        # downloads libv2ray.aar + builds olcrtc + hev
+cd V2rayNG && ./gradlew :app:assembleFdroidDebug
+```
+
+`fetch-deps.sh` populates the gitignored binary artefacts:
+
+| File | Source |
+|---|---|
+| `V2rayNG/app/libs/libv2ray.aar` | [`2dust/AndroidLibXrayLite`](https://github.com/2dust/AndroidLibXrayLite/releases) (prebuilt release) |
+| `V2rayNG/app/libs/<abi>/libhev-socks5-tunnel.so` | built from `./hev-socks5-tunnel` (vendored submodule, upstream from v2rayNG) |
+| `V2rayNG/app/src/main/jniLibs/<abi>/libolcrtc.so` | built from `./olcrtc` submodule (`go build` for `GOOS=android`) |
+| `V2rayNG/app/libs/olcrtc.aar` | built from `./olcrtc/mobile` via `gomobile bind`, with `go.*` runtime stripped |
+
+Other ABIs: rerun `ABI=armeabi-v7a ./scripts/fetch-deps.sh` etc.
+
+## Usage
+
+1. On a server (any Linux VPS outside the restricted network):
+   ```bash
+   olcrtc -mode srv -carrier wbstream -transport datachannel \
+     -id any -client-id default -key $(openssl rand -hex 32) \
+     -link direct -data data -dns 1.1.1.1:53
+   ```
+   Watch the logs for the room ID. The combo of `(room id, client id, key, carrier, transport)`
+   is the credentials the client needs.
+
+2. In the app: **+** → **Add [olcRTC]**, fill in the five fields, save, tap V at the bottom.
+
+3. For the URI form (paste / share / QR), see [olcrtc/docs/uri.md](olcrtc/docs/uri.md).
+
+## Credits
+
+- [2dust](https://github.com/2dust) — original v2rayNG / AndroidLibXrayLite
+- [openlibrecommunity](https://github.com/openlibrecommunity) / [zarazaex](https://t.me/zarazaexe) — olcRTC
+- [heiher](https://github.com/heiher) — hev-socks5-tunnel
+
+## License
+
+GPL-3.0, inherited from upstream v2rayNG.

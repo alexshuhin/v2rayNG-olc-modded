@@ -218,6 +218,7 @@ class CoreVpnService : VpnService(), ServiceControl {
     private fun configureNetworkSettings(builder: Builder) {
         val vpnConfig = SettingsManager.getCurrentVpnInterfaceAddressConfig()
         val bypassLan = SettingsManager.routingRulesetsBypassLan()
+        val olcrtc = currentProfileIsOlcrtc()
 
         // Configure IPv4 settings
         builder.setMtu(SettingsManager.getVpnMtu())
@@ -244,17 +245,31 @@ class CoreVpnService : VpnService(), ServiceControl {
             }
         }
 
-        // Configure DNS servers
-        //if (MmkvManager.decodeSettingsBool(AppConfig.PREF_LOCAL_DNS_ENABLED) == true) {
-        //  builder.addDnsServer(PRIVATE_VLAN4_ROUTER)
-        //} else {
-        SettingsManager.getVpnDnsServers().forEach {
-            if (Utils.isPureIpAddress(it)) {
-                builder.addDnsServer(it)
+        if (olcrtc) {
+            // hev's mapdns lives at 198.18.0.2:53 (in our 198.18.0.0/15 reserved range)
+            // and hands out fake IPs from 100.64.0.0/10. Route both into the tun so
+            // (1) DNS UDP queries reach hev and (2) TCP connects on fake IPs come back
+            // through the tun for hev to translate into hostname-based SOCKS5 CONNECTs.
+            builder.addRoute("198.18.0.0", 15)
+            builder.addRoute("100.64.0.0", 10)
+            builder.addDnsServer("198.18.0.2")
+            // Also keep a real upstream as a fallback for plain-IP DNS clients.
+            builder.addDnsServer("1.1.1.1")
+        } else {
+            SettingsManager.getVpnDnsServers().forEach {
+                if (Utils.isPureIpAddress(it)) {
+                    builder.addDnsServer(it)
+                }
             }
         }
 
         //builder.setSession(V2RayServiceManager.getRunningServerName())
+    }
+
+    private fun currentProfileIsOlcrtc(): Boolean {
+        val guid = MmkvManager.getSelectServer() ?: return false
+        return MmkvManager.decodeServerConfig(guid)?.configType ==
+                com.v2ray.ang.enums.EConfigType.OLCRTC
     }
 
     /**

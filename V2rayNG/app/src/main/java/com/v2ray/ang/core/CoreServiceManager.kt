@@ -109,7 +109,7 @@ object CoreServiceManager {
      * Checks if the V2Ray service is running.
      * @return True if the service is running, false otherwise.
      */
-    fun isRunning() = coreController.isRunning
+    fun isRunning() = coreController.isRunning || OlcrtcEngineController.isRunning()
 
     /**
      * Gets the name of the currently running server.
@@ -127,7 +127,7 @@ object CoreServiceManager {
      */
     @Throws(Exception::class)
     private fun startContextService(context: Context) {
-        if (coreController.isRunning) {
+        if (isRunning()) {
             LogUtil.w(AppConfig.TAG, "StartCore-Manager: Core already running")
             return
         }
@@ -147,6 +147,7 @@ object CoreServiceManager {
         if (config.configType != EConfigType.CUSTOM
             && config.configType != EConfigType.POLICYGROUP
             && config.configType != EConfigType.PROXYCHAIN
+            && config.configType != EConfigType.OLCRTC
             && !Utils.isValidUrl(config.server)
             && !Utils.isPureIpAddress(config.server.orEmpty())
         ) {
@@ -184,7 +185,7 @@ object CoreServiceManager {
      * Starts the V2Ray core service.
      */
     fun startCoreLoop(vpnInterface: ParcelFileDescriptor?): Boolean {
-        if (coreController.isRunning) {
+        if (coreController.isRunning || OlcrtcEngineController.isRunning()) {
             LogUtil.w(AppConfig.TAG, "StartCore-Manager: Core already running")
             return false
         }
@@ -213,6 +214,12 @@ object CoreServiceManager {
         val config = MmkvManager.decodeServerConfig(guid) ?: error("Failed to decode server config")
 
         LogUtil.i(AppConfig.TAG, "StartCore-Manager: Starting core loop for ${config.remarks}")
+
+        if (config.configType == EConfigType.OLCRTC) {
+            doStartOlcrtcLoop(service, config)
+            return
+        }
+
         val result = CoreConfigManager.getV2rayConfig(service, guid)
         LogUtil.d(AppConfig.TAG, result.content)
         if (!result.status) {
@@ -262,6 +269,49 @@ object CoreServiceManager {
     }
 
     /**
+     * Starts the olcRTC engine instead of libv2ray. The local SOCKS5 listener it
+     * brings up is what tun2socks (in CoreVpnService.runTun2socks) connects to,
+     * so the rest of the VPN pipeline keeps working unchanged.
+     */
+    @Throws(Exception::class)
+    private fun doStartOlcrtcLoop(service: Service, config: ProfileItem) {
+        val mFilter = IntentFilter(AppConfig.BROADCAST_ACTION_SERVICE)
+        mFilter.addAction(Intent.ACTION_SCREEN_ON)
+        mFilter.addAction(Intent.ACTION_SCREEN_OFF)
+        mFilter.addAction(Intent.ACTION_USER_PRESENT)
+        ContextCompat.registerReceiver(service, mMsgReceive, mFilter, Utils.receiverFlags())
+
+        currentConfig = config
+
+        // CoreVpnService also calls vpnProtect; route it into the engine so that
+        // outgoing WebRTC sockets bypass our own VPN tunnel (avoids a routing loop).
+        if (service is android.net.VpnService) {
+            OlcrtcEngineController.setProtector { fd -> service.protect(fd) }
+        }
+
+        NotificationManager.showNotification(currentConfig)
+
+        val socksPort = SettingsManager.getSocksPort()
+        OlcrtcEngineController.start(service, config, socksPort)
+
+        // WaitReady is blocking — run on IO so we don't lock the foreground service start.
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                OlcrtcEngineController.waitReady(socksPort, 15_000L)
+                LogUtil.i(AppConfig.TAG, "StartCore-Manager: olcrtc engine ready (SOCKS5 :$socksPort)")
+            } catch (e: Exception) {
+                LogUtil.e(AppConfig.TAG, "StartCore-Manager: olcrtc engine failed to become ready", e)
+                MessageUtil.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, e.message ?: "olcrtc start failed")
+                NotificationManager.cancelNotification()
+            }
+        }
+
+        MessageUtil.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
+        NotificationManager.startSpeedNotification(currentConfig)
+        LogUtil.i(AppConfig.TAG, "StartCore-Manager: olcrtc engine starting (SOCKS5 :$socksPort)")
+    }
+
+    /**
      * Stops the V2Ray core service.
      * Unregisters broadcast receivers, stops notifications, and shuts down plugins.
      * @return True if the core was stopped successfully, false otherwise.
@@ -275,6 +325,16 @@ object CoreServiceManager {
                     coreController.stopLoop()
                 } catch (e: Exception) {
                     LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to stop V2Ray loop", e)
+                }
+            }
+        }
+
+        if (OlcrtcEngineController.isRunning()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    OlcrtcEngineController.stop()
+                } catch (e: Exception) {
+                    LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to stop olcrtc engine", e)
                 }
             }
         }
@@ -453,7 +513,7 @@ object CoreServiceManager {
             val serviceControl = serviceControl?.get() ?: return
             when (intent?.getIntExtra("key", 0)) {
                 AppConfig.MSG_REGISTER_CLIENT -> {
-                    if (coreController.isRunning) {
+                    if (isRunning()) {
                         MessageUtil.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")
                     } else {
                         MessageUtil.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_NOT_RUNNING, "")
