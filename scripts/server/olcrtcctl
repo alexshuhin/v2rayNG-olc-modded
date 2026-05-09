@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# olcrtcctl — manage per-client olcrtc server instances under systemd
+set -euo pipefail
+
+OLCRTC_BIN=${OLCRTC_BIN:-/usr/local/bin/olcrtc}
+ETC_DIR=${ETC_DIR:-/etc/olcrtc}
+DATA_DIR=${DATA_DIR:-/var/lib/olcrtc}
+DNS=${DNS:-1.1.1.1:53}
+CARRIER_DEFAULT=${CARRIER_DEFAULT:-wbstream}
+TRANSPORT_DEFAULT=${TRANSPORT_DEFAULT:-datachannel}
+BOOTSTRAP_TIMEOUT=${BOOTSTRAP_TIMEOUT:-30}
+
+require_root() { [ "$EUID" -eq 0 ] || { echo "Run as root (sudo $0 ...)" >&2; exit 1; }; }
+sanitize_id() {
+  [[ "$1" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "Bad id '$1' (only [a-zA-Z0-9_-])" >&2; exit 1; }
+}
+env_file() { echo "$ETC_DIR/$1.env"; }
+
+# Bootstrap a fresh wbstream/jazz room by running olcrtc with -id any briefly,
+# parsing the room id out of stdout, then killing the process.
+bootstrap_room() {
+  local id="$1" carrier="$2" transport="$3" key="$4"
+  local log
+  log=$(mktemp)
+  trap 'rm -f "$log"' RETURN
+
+  ( "$OLCRTC_BIN" -mode srv -carrier "$carrier" -transport "$transport" \
+      -id any -client-id "$id" -key "$key" \
+      -link direct -data "$DATA_DIR" -dns "$DNS" >"$log" 2>&1 ) &
+  local pid=$!
+
+  local room=""
+  for _ in $(seq 1 "$BOOTSTRAP_TIMEOUT"); do
+    if [ -s "$log" ]; then
+      room=$(grep -oE '(room created|room joined|Wbstream room created): *[A-Za-z0-9_-]+' "$log" \
+              | head -1 | awk '{print $NF}')
+      [ -n "$room" ] && break
+    fi
+    sleep 1
+  done
+  kill -INT "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  if [ -z "$room" ]; then
+    echo "Failed to bootstrap room. Last log:" >&2
+    sed 's/^/  /' "$log" >&2
+    return 1
+  fi
+  printf '%s\n' "$room"
+}
+
+cmd_add() {
+  require_root
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: $0 add <client-id>"; exit 1; }
+  sanitize_id "$id"
+  local env; env=$(env_file "$id")
+  if [ -e "$env" ]; then
+    echo "Client '$id' already exists ($env). Use 'show $id' or 'remove $id'." >&2
+    exit 1
+  fi
+
+  install -d -m 700 "$ETC_DIR"
+  install -d -m 755 "$DATA_DIR"
+
+  local carrier="$CARRIER_DEFAULT" transport="$TRANSPORT_DEFAULT"
+  local key; key=$(openssl rand -hex 32)
+
+  echo "Bootstrapping $carrier room for '$id'..." >&2
+  local room
+  room=$(bootstrap_room "$id" "$carrier" "$transport" "$key") || exit 1
+
+  cat > "$env" <<ENV
+ROOM_ID=$room
+CLIENT_ID=$id
+KEY=$key
+CARRIER=$carrier
+TRANSPORT=$transport
+DNS=$DNS
+ENV
+  chmod 600 "$env"
+
+  systemctl daemon-reload
+  systemctl enable --now "olcrtc@${id}.service" >/dev/null
+  echo
+  cmd_show "$id"
+}
+
+cmd_show() {
+  require_root
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: $0 show <client-id>"; exit 1; }
+  sanitize_id "$id"
+  local env; env=$(env_file "$id")
+  [ -e "$env" ] || { echo "No such client: $id" >&2; exit 1; }
+
+  # shellcheck disable=SC1090
+  source "$env"
+  local status
+  status=$(systemctl is-active "olcrtc@${id}.service" 2>/dev/null || true)
+  local uri="olcrtc://${CARRIER}?${TRANSPORT}@${ROOM_ID}#${KEY}%${CLIENT_ID}\$${id}"
+
+  printf 'Client:     %s\n' "$id"
+  printf 'Status:     %s\n' "${status:-unknown}"
+  printf 'Carrier:    %s\n' "$CARRIER"
+  printf 'Transport:  %s\n' "$TRANSPORT"
+  printf 'Room ID:    %s\n' "$ROOM_ID"
+  printf 'Client ID:  %s\n' "$CLIENT_ID"
+  printf 'Key:        %s\n' "$KEY"
+  printf '\nImport URI:\n  %s\n' "$uri"
+  if command -v qrencode >/dev/null 2>&1; then
+    printf '\nQR (scan in app):\n'
+    printf '%s\n' "$uri" | qrencode -t ANSIUTF8
+  else
+    printf '\n(install `qrencode` for terminal QR)\n'
+  fi
+}
+
+cmd_list() {
+  require_root
+  shopt -s nullglob
+  printf '%-30s %-10s %-40s\n' 'CLIENT' 'STATUS' 'ROOM ID'
+  for f in "$ETC_DIR"/*.env; do
+    local id; id=$(basename "$f" .env)
+    # shellcheck disable=SC1090
+    ( source "$f"
+      local status
+      status=$(systemctl is-active "olcrtc@${id}.service" 2>/dev/null || echo '-')
+      printf '%-30s %-10s %-40s\n' "$id" "$status" "$ROOM_ID" )
+  done
+}
+
+cmd_remove() {
+  require_root
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: $0 remove <client-id>"; exit 1; }
+  sanitize_id "$id"
+  systemctl disable --now "olcrtc@${id}.service" >/dev/null 2>&1 || true
+  rm -f "$(env_file "$id")"
+  echo "Removed: $id"
+}
+
+cmd_logs() {
+  require_root
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: $0 logs <client-id> [-f]"; exit 1; }
+  shift
+  sanitize_id "$id"
+  exec journalctl -u "olcrtc@${id}.service" --no-pager "$@"
+}
+
+cmd_regen_room() {
+  require_root
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: $0 regen-room <client-id>"; exit 1; }
+  sanitize_id "$id"
+  local env; env=$(env_file "$id")
+  [ -e "$env" ] || { echo "No such client: $id" >&2; exit 1; }
+
+  systemctl stop "olcrtc@${id}.service" 2>/dev/null || true
+  # shellcheck disable=SC1090
+  source "$env"
+  echo "Bootstrapping new $CARRIER room for '$id'..." >&2
+  local room
+  room=$(bootstrap_room "$CLIENT_ID" "$CARRIER" "$TRANSPORT" "$KEY") || {
+    systemctl start "olcrtc@${id}.service" || true
+    exit 1
+  }
+
+  sed -i.bak "s|^ROOM_ID=.*|ROOM_ID=${room}|" "$env" && rm -f "${env}.bak"
+  systemctl start "olcrtc@${id}.service"
+  echo
+  cmd_show "$id"
+}
+
+usage() {
+  cat <<USAGE
+Usage: $0 <command> [args]
+
+Commands:
+  add <id>          Create a new client (generates key + room, registers systemd unit)
+  show <id>         Print client params and import URI/QR
+  list              List all configured clients
+  remove <id>       Stop+disable+forget a client
+  regen-room <id>   Re-bootstrap room (use if wbstream room TTL expired)
+  logs <id> [-f]    journalctl for the client's unit
+
+Defaults: carrier=$CARRIER_DEFAULT, transport=$TRANSPORT_DEFAULT, dns=$DNS
+Env vars: OLCRTC_BIN, ETC_DIR, DATA_DIR, DNS, CARRIER_DEFAULT, TRANSPORT_DEFAULT
+USAGE
+}
+
+case "${1:-}" in
+  add) shift; cmd_add "$@" ;;
+  show) shift; cmd_show "$@" ;;
+  list|ls) cmd_list ;;
+  remove|rm) shift; cmd_remove "$@" ;;
+  regen-room) shift; cmd_regen_room "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) echo "Unknown command: $1" >&2; usage; exit 1 ;;
+esac

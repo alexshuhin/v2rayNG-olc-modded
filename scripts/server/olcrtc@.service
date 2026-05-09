@@ -1,0 +1,25 @@
+[Unit]
+Description=olcrtc server (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/olcrtc/%i.env
+ExecStart=/usr/local/bin/olcrtc -mode srv \
+  -carrier ${CARRIER} -transport ${TRANSPORT} \
+  -id ${ROOM_ID} -client-id ${CLIENT_ID} -key ${KEY} \
+  -link direct -data /var/lib/olcrtc -dns ${DNS}
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+StateDirectory=olcrtc
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
